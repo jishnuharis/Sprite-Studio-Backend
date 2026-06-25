@@ -1,45 +1,67 @@
 import datetime
-import razorpay
+import hmac
+import hashlib
+import json
+
+import requests
 from sqlalchemy.orm import Session
 
 import config
 from models import User
 
-client = razorpay.Client(auth=(config.RAZORPAY_KEY_ID, config.RAZORPAY_KEY_SECRET))
+RAZORPAY_BASE = "https://api.razorpay.com/v1"
+AUTH = (config.RAZORPAY_KEY_ID, config.RAZORPAY_KEY_SECRET)
 
 
 def create_checkout_session(user: User) -> str:
     """
-    Creates a Razorpay Subscription and returns its hosted payment page
-    (short_url) — the user pays there, same role as Stripe Checkout.
-    We stash the user's id in `notes` so the webhook can find them later.
+    Creates a Razorpay Subscription via plain REST call and returns its
+    hosted payment page (short_url) — the user pays there, same role as
+    Stripe Checkout. We stash the user's id in `notes` so the webhook can
+    find them later.
     """
-    subscription = client.subscription.create({
-        "plan_id": config.RAZORPAY_PLAN_ID,
-        "customer_notify": 1,
-        "total_count": 120,  # ~10 years of monthly cycles; Razorpay requires a count
-        "notes": {"user_id": str(user.id)},
-    })
+    resp = requests.post(
+        f"{RAZORPAY_BASE}/subscriptions",
+        auth=AUTH,
+        json={
+            "plan_id": config.RAZORPAY_PLAN_ID,
+            "customer_notify": 1,
+            "total_count": 120,  # ~10 years of monthly cycles; Razorpay requires a count
+            "notes": {"user_id": str(user.id)},
+        },
+        timeout=15,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Razorpay error {resp.status_code}: {resp.text[:300]}")
 
-    user.razorpay_subscription_id = subscription["id"]
-    return subscription["short_url"]
+    data = resp.json()
+    user.razorpay_subscription_id = data["id"]
+    return data["short_url"]
 
 
 def cancel_subscription(user: User) -> None:
     """Lets the user cancel — Razorpay has no hosted self-serve portal like Stripe's,
-    so this just calls the API directly. Wire this up to a `/billing/cancel-subscription`
-    endpoint if you want users to self-cancel from inside the app."""
+    so this just calls the API directly."""
     if not user.razorpay_subscription_id:
         raise ValueError("User has no active subscription to cancel.")
-    client.subscription.cancel(user.razorpay_subscription_id)
+    resp = requests.post(
+        f"{RAZORPAY_BASE}/subscriptions/{user.razorpay_subscription_id}/cancel",
+        auth=AUTH,
+        timeout=15,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Razorpay error {resp.status_code}: {resp.text[:300]}")
 
 
 def verify_webhook(payload: bytes, signature: str) -> dict:
-    """Raises razorpay.errors.SignatureVerificationError if invalid."""
-    client.utility.verify_webhook_signature(
-        payload.decode("utf-8"), signature, config.RAZORPAY_WEBHOOK_SECRET
-    )
-    import json
+    """Verifies the HMAC-SHA256 signature Razorpay sends on every webhook call."""
+    expected = hmac.new(
+        config.RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature or ""):
+        raise ValueError("Invalid webhook signature")
     return json.loads(payload)
 
 
