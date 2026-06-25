@@ -1,5 +1,12 @@
-from sqlalchemy import Column, Integer, String, DateTime, func
+import datetime
+
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
+
 from database import Base
+
+
+def _now():
+    return datetime.datetime.utcnow()
 
 
 class User(Base):
@@ -8,17 +15,17 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
 
+    created_at = Column(DateTime, default=_now)
+
+    # Razorpay
     razorpay_customer_id = Column(String, nullable=True)
     razorpay_subscription_id = Column(String, nullable=True)
+    # One of: "none", "created", "authenticated", "active", "pending",
+    # "halted", "cancelled", "completed", "expired"
+    # ("active" and "authenticated" are treated as having access -- see main.py)
+    subscription_status = Column(String, default="none")
 
-    # inactive | trialing | active | past_due | canceled
-    subscription_status = Column(String, default="inactive", nullable=False)
-
-    period_start = Column(DateTime, nullable=True)
-    period_end = Column(DateTime, nullable=True)
-    generations_used = Column(Integer, default=0, nullable=False)
-
-    def has_active_subscription(self) -> bool:
-        return self.subscription_status in ("active", "trialing")
+    # Usage / quota, reset on each successful billing-period renewal
+    generations_used = Column(Integer, default=0)
+    billing_period_start = Column(DateTime, default=_now)

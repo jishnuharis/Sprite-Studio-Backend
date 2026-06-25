@@ -1,21 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-import config
+from config import DATABASE_URL
 
-database_url = config.DATABASE_URL
-if database_url.startswith("postgres://"):
-    # Render (and Heroku) hand out "postgres://", but SQLAlchemy 2.x
-    # requires the "postgresql://" scheme.
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 
-if database_url.startswith("postgresql://"):
-    # Use the psycopg v3 driver explicitly (works on newer Python versions
-    # like 3.14 where psycopg2-binary has no compatible wheel).
-    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-
-connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-engine = create_engine(database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -26,3 +16,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def init_db():
+    # Imported here (not at module load) to avoid circular imports with models.py
+    import models  # noqa: F401
+    Base.metadata.create_all(bind=engine)
