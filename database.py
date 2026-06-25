@@ -9,6 +9,11 @@ if database_url.startswith("postgres://"):
     # requires the "postgresql://" scheme.
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
+if database_url.startswith("postgresql://"):
+    # Use the psycopg v3 driver explicitly (works on newer Python versions
+    # like 3.14 where psycopg2-binary has no compatible wheel).
+    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
 connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
 engine = create_engine(database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
