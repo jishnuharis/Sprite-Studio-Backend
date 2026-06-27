@@ -1,7 +1,7 @@
 """
 All configuration comes from environment variables so nothing secret ever
-lives in source control. On Railway, set these under your service's
-Variables tab. Locally, copy .env.example to .env and fill it in.
+lives in source control. On Render, set these under your service's
+Environment tab. Locally, copy .env.example to .env and fill it in.
 """
 import os
 
@@ -16,11 +16,13 @@ def _require(name: str, default=None):
 
 
 # --- Database -----------------------------------------------------------
-# Railway's Postgres add-on injects DATABASE_URL automatically. Locally,
+# Render's managed Postgres gives you a connection string ("Internal
+# Database URL") that you paste into this service's DATABASE_URL variable
+# yourself (or wire automatically via render.yaml's `fromDatabase`). Locally,
 # falls back to a SQLite file so you can run/test without any setup.
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./sprite_studio.db")
-# Railway's Postgres URLs sometimes start with postgres:// — SQLAlchemy 2.x
-# requires postgresql://
+# Some providers (Render included, depending on which URL you copy) hand out
+# postgres:// URLs -- SQLAlchemy 2.x requires postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -37,7 +39,9 @@ REPLICATE_MODEL = os.environ.get(
 
 # --- Public URL of this server itself --------------------------------------
 # Needed to build the checkout page URL we hand back to the desktop app.
-# On Railway, set this to your generated domain, e.g. https://yourapp.up.railway.app
+# Render gives every web service a free domain automatically -- set this to
+# that, e.g. https://yourapp.onrender.com (find it at the top of your
+# service's page in the Render dashboard).
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000")
 
 # --- Razorpay -----------------------------------------------------------
@@ -70,3 +74,13 @@ MAX_HEIGHT = int(os.environ.get("MAX_HEIGHT", "1024"))
 # The desktop app doesn't run in a browser, so this mostly matters if you
 # ever add a web client. Comma-separated list of allowed origins, or "*".
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+
+# --- Brute-force protection --------------------------------------------
+# Per-IP rate limit on /auth/login and /auth/signup, and a per-account
+# lockout after repeated failed logins. Both are in-memory (see ratelimit.py)
+# which is fine for Render's default single-instance setup; if you scale to
+# multiple instances, move this to a shared store like Redis instead.
+AUTH_RATE_LIMIT_MAX = int(os.environ.get("AUTH_RATE_LIMIT_MAX", "10"))
+AUTH_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("AUTH_RATE_LIMIT_WINDOW_SECONDS", "300"))
+MAX_FAILED_LOGIN_ATTEMPTS = int(os.environ.get("MAX_FAILED_LOGIN_ATTEMPTS", "5"))
+ACCOUNT_LOCKOUT_SECONDS = int(os.environ.get("ACCOUNT_LOCKOUT_SECONDS", str(15 * 60)))

@@ -1,5 +1,6 @@
 import base64
 import datetime
+import time
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 
 import config
 import billing
+import ratelimit
 import replicate_client
 from auth import hash_password, verify_password, create_token, get_current_user
 from database import get_db, init_db
@@ -37,7 +39,10 @@ def health():
 # ── Auth ────────────────────────────────────────────────────────────────────
 
 @app.post("/auth/signup")
-def signup(body: dict, db: Session = Depends(get_db)):
+def signup(body: dict, request: Request, db: Session = Depends(get_db)):
+    if not ratelimit.auth_rate_limiter.check(ratelimit.client_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a few minutes and try again.")
+
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
     if not email or "@" not in email:
@@ -59,16 +64,47 @@ def signup(body: dict, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/login")
-def login(body: dict, db: Session = Depends(get_db)):
+def login(body: dict, request: Request, db: Session = Depends(get_db)):
+    if not ratelimit.auth_rate_limiter.check(ratelimit.client_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a few minutes and try again.")
+
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
 
     user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(password, user.password_hash):
+    if not user:
+        # Run a bcrypt check against a dummy hash anyway, so response timing
+        # doesn't reveal whether this email is registered.
+        verify_password(password, hash_password("dummy_constant_time_fill"))
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
+    if ratelimit.is_locked(user):
+        minutes = max(1, int((user.locked_until - time.time()) / 60))
+        raise HTTPException(
+            status_code=423,
+            detail=f"Too many failed attempts. Try again in {minutes} minute(s).",
+        )
+
+    if not verify_password(password, user.password_hash):
+        ratelimit.record_failed_login(user, db)
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+
+    ratelimit.record_successful_login(user, db)
     token = create_token(user.id)
     return {"token": token}
+
+
+@app.post("/auth/change-password")
+def change_password(body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    old_password = body.get("old_password") or ""
+    new_password = body.get("new_password") or ""
+    if not verify_password(old_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    user.password_hash = hash_password(new_password)
+    db.commit()
+    return {"status": "ok"}
 
 
 # ── Account ─────────────────────────────────────────────────────────────────
@@ -81,7 +117,18 @@ def me(user: User = Depends(get_current_user)):
         "generations_used": user.generations_used,
         "generations_limit": config.GENERATIONS_PER_MONTH,
         "billing_period_start": user.billing_period_start.isoformat() if user.billing_period_start else None,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
     }
+
+
+@app.post("/account/delete")
+def delete_account(body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    password = body.get("password") or ""
+    if not verify_password(password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect password")
+    db.delete(user)
+    db.commit()
+    return {"status": "ok"}
 
 
 # ── Billing (Razorpay) ───────────────────────────────────────────────────────
@@ -108,7 +155,7 @@ def checkout_page(subscription_id: str):
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Sprite Studio — Subscribe</title>
+  <title>Sprite Studio - Subscribe</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {{ font-family: -apple-system, sans-serif; background:#1a1a2e; color:#eee;
@@ -124,7 +171,7 @@ def checkout_page(subscription_id: str):
 </head>
 <body>
   <div class="card">
-    <h1>🎨 Sprite Studio Cloud</h1>
+    <h1>Sprite Studio Cloud</h1>
     <p>Subscribe to unlock cloud AI image generation.</p>
     <button id="pay-btn">Subscribe Now</button>
     <div id="status"></div>
@@ -140,7 +187,7 @@ def checkout_page(subscription_id: str):
         theme: {{ color: "#e94560" }},
         handler: function (response) {{
           document.getElementById('status').innerHTML =
-            "✅ Payment received! You can close this tab and go back to Sprite Studio.";
+            "Payment received. You can close this tab and go back to Sprite Studio.";
           document.getElementById('pay-btn').style.display = 'none';
         }},
         modal: {{
@@ -152,7 +199,7 @@ def checkout_page(subscription_id: str):
       var rzp = new Razorpay(options);
       rzp.on('payment.failed', function (response) {{
         document.getElementById('status').innerHTML =
-          "❌ Payment failed: " + (response.error && response.error.description || "please try again.");
+          "Payment failed: " + (response.error && response.error.description || "please try again.");
       }});
       rzp.open();
     }};

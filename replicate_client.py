@@ -23,7 +23,7 @@ def _headers():
     if not config.REPLICATE_API_TOKEN:
         raise ReplicateError(
             "REPLICATE_API_TOKEN is not set on the server. "
-            "Add it in your Railway service's environment variables."
+            "Add it in your Render service's environment variables."
         )
     return {
         "Authorization": f"Bearer {config.REPLICATE_API_TOKEN}",

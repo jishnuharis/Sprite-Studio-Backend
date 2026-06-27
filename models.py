@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Float
 
 from database import Base
 
@@ -29,3 +29,9 @@ class User(Base):
     # Usage / quota, reset on each successful billing-period renewal
     generations_used = Column(Integer, default=0)
     billing_period_start = Column(DateTime, default=_now)
+
+    # --- Brute-force protection -------------------------------------------
+    # failed_login_attempts resets to 0 on any successful login.
+    # locked_until is an epoch timestamp; 0 means "not locked".
+    failed_login_attempts = Column(Integer, default=0)
+    locked_until = Column(Float, default=0.0)
